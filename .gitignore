@@ -1,0 +1,13 @@
+# Model weights and binaries
+weights/
+*.pt
+*.pth
+*.onnx
+*.bin
+*.h5
+*.pb
+*.tflite
+*.engine
+*.weights
+*.ckpt
+*.safetensors
