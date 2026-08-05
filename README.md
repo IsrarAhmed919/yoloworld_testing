@@ -1,31 +1,52 @@
-# Is there a single confidence threshold for open-vocabulary detection?
+# What does prompting cost you?
 
-Open-vocabulary detectors like YOLO-World let you detect a class by naming it, with no
-training. Every deployment guide then tells you to pick a confidence threshold and ship.
+Open-vocabulary detectors like YOLO-World detect a class by being told its name. No labelling,
+no training, no dataset. The obvious question for anyone shipping a detector is what that
+convenience actually costs in accuracy — and it's a question papers rarely answer, because
+papers compare against other papers rather than against the practical alternative.
 
-This repo is an attempt to check whether that advice actually holds — because early testing
-suggests the usable threshold is **different for every prompt**, which would mean a single
-global `conf` silently decides which of your classes work and which don't.
+This repo measures it directly: same backbone, same images, same evaluation. One model
+prompted, one trained.
 
-**Status:** early. The COCO evaluation harness works and has produced a zero-shot baseline on
-100 images. The threshold sweep itself is being redone with the correct metric — see
-[Correction](#correction-map-cannot-answer-this-question) below.
+> **Result:** on six COCO classes, prompting reaches **90% of a trained detector's F1**
+> (0.523 vs 0.580 mean). Training buys about **+0.06 F1** for the cost of labelling a dataset.
+> The gap is uneven — some classes gain 0.10, others gain nothing.
 
 ---
 
-## Why this matters in production
+## Headline comparison
 
-In a deployed video system, the confidence threshold is the dial that trades false positives
-against misses. Set it too low and operators get flooded with false alarms, stop trusting the
-system, and eventually turn it off. Set it too high and you miss the events the system exists
-to catch.
+YOLO-World S (prompted, zero-shot) vs YOLOv8s (trained on COCO). Both models share the
+YOLOv8s backbone, so the only meaningful difference is prompted versus trained.
 
-With a closed-vocabulary detector you tune that dial once against a labelled validation set.
-With an open-vocabulary detector the class list is decided at runtime by whoever types the
-prompt — so if the correct threshold moves with the prompt, there is no validation set to tune
-against and no safe default to ship.
+| class | prompted F1 | trained F1 | gap |
+|---|---|---|---|
+| person | 0.688 | 0.743 | +0.056 |
+| chair | 0.439 | 0.547 | +0.108 |
+| backpack | 0.429 | 0.403 | **−0.026** |
+| umbrella | 0.641 | 0.745 | +0.103 |
+| scissors | 0.528 | 0.549 | +0.021 |
+| toothbrush | 0.410 | 0.491 | +0.081 |
+| **mean** | **0.523** | **0.580** | **+0.057** |
 
-That is the question this repo is trying to answer with numbers.
+Each class evaluated on 100 images containing it plus 100 that don't, at each model's own
+optimal threshold. Negative images are included so that false positives on absent objects are
+counted honestly — evaluating only on positives would flatter both models.
+
+**What this supports:**
+
+- Prompting retains roughly **90%** of trained performance on these classes
+- The gap is **not uniform**. `chair` and `umbrella` gain ~0.10 from training; `backpack` and
+  `scissors` gain essentially nothing, and `backpack` is marginally better prompted
+- So the useful question is not "prompt or train" but "*which classes actually need training*"
+
+**What this does not support:**
+
+- Six classes is far too few to predict *which* classes benefit. Directional only
+- **COCO is home turf for both models.** YOLOv8s was trained on it, and YOLO-World very likely
+  saw COCO-like data during pretraining. This is close to open-vocabulary's best case. The
+  actual reason to use an open-vocabulary model is to detect things COCO does not contain, and
+  this experiment says nothing about that
 
 ---
 
@@ -33,140 +54,88 @@ That is the question this repo is trying to answer with numbers.
 
 | | |
 |---|---|
-| Model | `yolov8s-world.pt` (YOLO-World S) via Ultralytics |
+| Prompted | `yolov8s-world.pt` (YOLO-World S) |
+| Trained | `yolov8s.pt` (YOLOv8s, COCO) |
 | GPU | NVIDIA RTX 4050 Laptop, 6 GB, Ada Lovelace |
-| Eval data | COCO val2017 (5,000 images, 80 classes) |
-| Framework | Ultralytics, PyTorch, pycocotools, torchmetrics |
+| Data | COCO val2017 |
+| Matching | greedy, IoU ≥ 0.5, each ground-truth box claimed once |
+| Ground truth | `iscrowd` regions excluded |
 
-The 6 GB card is deliberate, not a limitation. Jetson Orin Nano ships with 8 GB shared memory,
-so results from constrained hardware are more representative of real edge deployments than
-results from a datacentre GPU.
+The 6 GB card is deliberate. Jetson Orin Nano ships with 8 GB shared, so results from
+constrained hardware are more representative of edge deployment than datacentre-GPU numbers.
 
----
-
-## Preliminary observation — webcam
-
-**Method.** `yoloworld.py` runs YOLO-World on a live webcam feed with four prompts set at
-once: `person`, `ring`, `headphones`, `hand`. All four objects were physically present in
-frame. Confidence threshold was varied by hand between runs.
-
-**What happened.**
-
-| Confidence | person | ring | headphones | hand | Box count |
-|---|---|---|---|---|---|
-| below 0.25 | detected | detected | detected | detected | far too many, heavy false positives |
-| above 0.25 | detected | detected | **missed** | **missed** | few, and accurate |
-
-Two things follow, if this survives proper measurement:
-
-1. **No single threshold worked for all four prompts.** Any value that kept `headphones` and
-   `hand` visible also produced an unusable number of false positives; any value that cleaned
-   up the output silently dropped two of the four classes entirely.
-2. **The failure was calibration, not capability.** An earlier guess was that `hand` might be
-   undetectable because it is a body *part* rather than a whole object, and grounding datasets
-   rarely annotate parts. That was wrong — the model detects it fine at low confidence. It
-   simply is not confident about it.
-
-**Why this is not a result yet.** One scene, one lighting condition, one camera, no ground
-truth, and "too many boxes" is an impression rather than a measurement. It is enough to
-justify the experiment below. It is not enough to claim anything.
+An earlier version of this table compared YOLO-World S against **YOLOv8n**, and prompting
+appeared to *beat* training on four of six classes. That was a confound, not a result —
+YOLOv8n is roughly a third the size. It is recorded here because it is exactly the kind of
+mistake that produces an exciting and wrong headline.
 
 ---
 
-## Baseline — zero-shot `person` on COCO val2017
+## Two hypotheses that did not survive
 
-First quantitative run. Harness: `pycocotools` for ground truth, `torchmetrics` for mAP,
-`iscrowd` regions excluded.
+The project started somewhere else. Both starting hypotheses were tested and refuted, and
+they are kept here because the negative results are informative.
 
-**Scale:** 100 images · 283 ground-truth people · 3,661 raw detections at `conf=0.001`
+### 1. "Each class needs its own confidence threshold" — not supported
 
-That ratio is worth stating plainly — at near-zero confidence the model emits roughly **13
-boxes for every real person**. Whatever else is true, an open-vocabulary detector run without a
-threshold is not a detector, it is a proposal generator.
+The motivating observation came from a webcam: prompting for `person`, `ring`, `headphones`
+and `hand` at once, nothing below 0.25 was clean and nothing above 0.25 detected the last two.
 
-| conf | mAP@0.5 | mAP@0.5:0.95 |
-|---|---|---|
-| 0.01 | 0.713 | 0.506 |
-| 0.05 | 0.692 | 0.493 |
-| 0.10 | 0.651 | 0.469 |
-| 0.25 | 0.552 | 0.420 |
-| 0.40 | 0.483 | 0.372 |
-| 0.60 | 0.373 | 0.308 |
+Measured properly on COCO, the optimal thresholds cluster:
 
-**What is valid here:** YOLO-World S, prompted with the single word `person` and never trained
-on this task, reaches **mAP@0.5 ≈ 0.71** on COCO person detection. For zero-shot that is
-respectable, and it is the number the "prompt versus train" comparison will be measured
-against once a trained baseline is run on the identical 100 images.
+| class | best conf | | class | best conf |
+|---|---|---|---|---|
+| person | 0.33 | | scissors | 0.27 |
+| chair | 0.25 | | toaster | 0.27 |
+| backpack | 0.13 | | toothbrush | 0.25 |
+| umbrella | 0.25 | | hair drier | 0.01 |
 
-### Correction: mAP cannot answer this question
+Six of eight sit between 0.25 and 0.33 — the Ultralytics default of 0.25 is fine. The two
+outliers had **9** and **11** ground-truth boxes respectively, which is far too few to mean
+anything.
 
-**What is *not* valid is reading an optimal threshold off that table.**
+That is itself worth recording: **COCO val2017 is too small for rare-class analysis.** Those
+categories have a few dozen instances in the entire 5,000-image set. Rare-class work needs
+COCO train2017 or LVIS.
 
-The column decreases monotonically, which looks like "lower is better" but is an artifact of
-the metric. Average precision already integrates the full precision-recall curve and ranks
-detections by score internally. Filtering by confidence *before* computing AP simply truncates
-that curve — recall is lost and nothing is gained. The AP-optimal threshold is therefore always
-≈ 0, for every class, in every experiment. It measures the ranking, not the operating point.
+For `person`, the F1 curve is also broad and flat — anything from 0.15 to 0.30 lands within
+2.5% of optimal, and the argmax is unstable enough to jump several steps between samples
+without F1 meaningfully changing.
 
-The threshold question needs **precision, recall and F1 at each threshold**, with the optimum
-at the F1 peak. That sweep is being rerun; the tables below stay empty until it is done.
+### 2. "Optimal threshold depends on class prevalence" — refuted
 
-This mistake is left in the README on purpose. The whole claim of this repo is that people
-choose thresholds badly, so quietly deleting a run that chose a metric badly would be a poor
-way to make the argument.
+A plausible follow-up: if a class appears in fewer images, empty images generate false
+positives, precision suffers, and the optimal threshold should rise. This matters in
+surveillance, where the target event is absent from virtually every frame.
 
----
+Fixed 100 positive images, varied only the negatives:
 
-## Planned experiment — COCO val2017
+| prevalence | best conf | precision | recall | F1 |
+|---|---|---|---|---|
+| 100.0% (100p/0n) | 0.23 | 0.768 | 0.631 | 0.693 |
+| 66.7% (100p/50n) | 0.23 | 0.760 | 0.631 | 0.689 |
+| 50.0% (100p/100n) | 0.29 | 0.801 | 0.603 | 0.688 |
+| 33.3% (100p/200n) | 0.29 | 0.792 | 0.603 | 0.685 |
+| 20.0% (100p/400n) | 0.29 | 0.768 | 0.603 | 0.675 |
 
-### Protocol
+Threshold moves 0.23 → 0.29 across a fivefold change in prevalence, and F1 drops 2.6%.
+Effectively nothing.
 
-1. Select 12–15 COCO classes spanning frequency: common (`person`, `car`, `dog`, `chair`),
-   mid (`backpack`, `umbrella`, `laptop`, `sink`), rare (`toothbrush`, `hair drier`,
-   `scissors`, `toaster`).
-2. For each class, write several prompt variants — e.g. `person` / `a person` / `human` /
-   `pedestrian`, or `hair drier` / `hair dryer` / `blow dryer`.
-3. Run inference **once per prompt at `conf=0.001`** and store every detection with its score.
-   Thresholds are then swept offline in post-processing. This turns *(prompts × thresholds)*
-   model runs into *prompts* model runs.
-4. Compute precision, recall and AP against COCO ground truth at each threshold.
+The precision column explains why: it is **0.768 at both ends**. Adding 400 person-free images
+produced almost no false positives — YOLO-World does not hallucinate people into empty scenes,
+so there is no precision damage for a higher threshold to correct. The proposed mechanism does
+not exist.
 
-Ground-truth handling: `iscrowd` regions are excluded, since crowd annotations are unlabelled
-groups and counting them as misses would distort recall.
+### A methodological note worth keeping
 
-### Metrics
+The first threshold sweep used **mAP**, and produced a curve that fell monotonically from 0.713
+to 0.373, which looks like "lower threshold is better."
 
-- **Precision, recall and F1 at each swept threshold** — greedy IoU≥0.5 matching, each ground
-  truth box claimed at most once. This is what selects the operating point.
-- **Optimal threshold** per (class, prompt) = the value maximising F1
-- `mAP@0.5` and `mAP@0.5:0.95` reported alongside, as a threshold-independent measure of
-  overall model quality — *not* used for threshold selection, for the reason given above
-
-### Results — to be filled
-
-**Table 1 — does the optimal threshold vary by class?**
-
-| class | frequency | best conf | AP@0.5 at best | AP@0.5 at global 0.25 | loss |
-|---|---|---|---|---|---|
-| person | common | | | | |
-| chair | common | | | | |
-| backpack | mid | | | | |
-| toothbrush | rare | | | | |
-| hair drier | rare | | | | |
-
-**Table 2 — does prompt wording change accuracy and calibration?**
-
-| class | prompt variant | AP@0.5 | best conf |
-|---|---|---|---|
-| person | `person` | | |
-| person | `a person` | | |
-| person | `human` | | |
-| person | `pedestrian` | | |
-| hair drier | `hair drier` | | |
-| hair drier | `hair dryer` | | |
-
-Identical ground truth, identical images — only the wording differs. `hair drier` is COCO's
-own spelling, which makes it a free natural experiment against the more common `hair dryer`.
+That is an artifact. Average precision already integrates the full precision-recall curve and
+ranks detections internally; filtering by confidence beforehand simply truncates the curve.
+The AP-optimal threshold is always ≈ 0, for every class, always. **mAP measures ranking quality,
+not the operating point.** Threshold selection needs precision, recall and F1, with the optimum
+at the F1 peak.
 
 ---
 
@@ -174,46 +143,45 @@ own spelling, which makes it a free natural experiment against the more common `
 
 | File | Purpose |
 |---|---|
-| `yolo_on_video.py` | Baseline: closed-vocabulary YOLOv8n on webcam, for comparison |
-| `yoloworld.py` | Open-vocabulary YOLO-World on webcam with runtime-set classes |
-| `yolo_world_vs_coco.ipynb` | COCO evaluation harness (in progress) |
+| `yolo_world_vs_coco.ipynb` | All COCO experiments — harness, sweeps, comparison |
+| `yoloworld.py` | Open-vocabulary detection on a live feed, threshold adjustable at runtime |
+| `yolo_on_video.py` | Closed-vocabulary YOLOv8 on webcam, for comparison |
 | `coco/` | val2017 images and annotations (gitignored) |
 
-Model weights are gitignored. They download automatically on first run.
+`yoloworld.py` supports live threshold sweeping and CSV logging of per-class detection counts:
+
+```bash
+python yoloworld.py --classes person ring headphones hand --conf 0.25 --log sweep.csv
+# keys:  q quit   +/- adjust threshold   s save frame
+```
 
 ---
 
 ## Reproducing
 
 ```bash
-pip install ultralytics pycocotools torchmetrics opencv-python
+pip install ultralytics pycocotools torchmetrics torchvision opencv-python
 
-# webcam observation
-python yoloworld.py
-
-# COCO evaluation data
 wget -c http://images.cocodataset.org/zips/val2017.zip
 wget -c http://images.cocodataset.org/annotations/annotations_trainval2017.zip
 unzip val2017.zip -d coco/ && unzip annotations_trainval2017.zip -d coco/
 ```
 
+Model weights download automatically on first run and are gitignored.
+
 ---
 
-## Roadmap
+## Next
 
-- [x] Webcam observation across confidence thresholds
-- [x] COCO val2017 downloaded
-- [x] Evaluation harness working — 100-image zero-shot `person` baseline, mAP@0.5 0.713
-- [ ] Redo the sweep with precision / recall / F1 instead of mAP
-- [ ] Trained-detector baseline on the same 100 images, for the prompt-vs-train comparison
-- [ ] Full sweep across classes and prompt variants
-- [ ] Threshold stability: do per-class optima transfer between datasets and scenes?
-- [ ] Latency and throughput on constrained hardware — FP16, INT8, FP8 (Ada) via TensorRT
-- [ ] Multi-stream: where does the throughput ceiling sit, and is it inference or NVDEC decode?
-
-The stability question is the one that matters most. If per-class thresholds have to be
-recalibrated for every new scene, then open-vocabulary detection is considerably harder to
-deploy than the benchmark numbers in the papers suggest.
+- [ ] **Classes outside COCO.** The real use case for open-vocabulary detection is objects no
+      trained detector covers. Everything above is measured on COCO's home turf, which flatters
+      both models. LVIS rare classes are the obvious next dataset
+- [ ] More classes, so "which classes benefit from training" becomes a rule rather than an
+      observation
+- [ ] Prompt sensitivity — does `hair drier` vs `hair dryer` vs `blow dryer` move F1 for
+      identical ground truth?
+- [ ] Latency and throughput on constrained hardware: FP16, INT8, FP8 (Ada) via TensorRT
+- [ ] Multi-stream — where the ceiling sits, and whether it is inference or NVDEC decode
 
 ---
 
