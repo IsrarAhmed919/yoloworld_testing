@@ -11,6 +11,4 @@ weights/
 *.weights
 *.ckpt
 *.safetensors
-*.png
-*.jpg
-coco/*
+coco/

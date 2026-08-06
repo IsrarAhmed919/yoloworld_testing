@@ -12,6 +12,8 @@ prompted, one trained.
 > (0.523 vs 0.580 mean). Training buys about **+0.06 F1** for the cost of labelling a dataset.
 > The gap is uneven — some classes gain 0.10, others gain nothing.
 
+![F1 by class, prompted YOLO-World S against trained YOLOv8s on COCO val2017. Mean 0.523 vs 0.580.](prompt_vs_train.png)
+
 ---
 
 ## Headline comparison
@@ -185,6 +187,13 @@ Model weights download automatically on first run and are gitignored.
 
 ---
 
-## License
+## License and attribution
 
-MIT
+Code in this repo is MIT (see `LICENSE`).
+
+Two things it does not cover:
+
+- **Models** come from [Ultralytics](https://github.com/ultralytics/ultralytics) and ship under
+  **AGPL-3.0**, with a commercial licence available as an alternative. If you reuse this work
+  in a product, check which applies to you.
+- **COCO annotations** are **CC BY 4.0**; the images carry their own individual Flickr terms.
