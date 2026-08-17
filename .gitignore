@@ -20,3 +20,6 @@ bench_frame.jpg
 
 # demo output, regenerate with make_demo.py
 demo_side_by_side.mp4
+
+__pycache__/
+*.pyc
