@@ -12,3 +12,11 @@ weights/
 *.ckpt
 *.safetensors
 coco/
+# build artifacts: GPU- and TensorRT-version-specific, useless to anyone else
+*.engine
+*.onnx
+*.pt
+bench_frame.jpg
+
+# demo output, regenerate with make_demo.py
+demo_side_by_side.mp4
